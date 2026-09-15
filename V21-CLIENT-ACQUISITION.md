@@ -1,0 +1,1 @@
+V21: public conversion site + redesigned responsive Control Center + CRM funnel + explicit CRM save + clickable lead phones + safer escaped CRM output. Existing CRUD/categories/photos/audit/backend retained.
