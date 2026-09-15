@@ -1,21 +1,18 @@
 services:
   - type: web
-    name: centr-potolkov
+    name: potolok
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_PASSWORD
         sync: false
       - key: SITE_URL
         sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: SUPABASE_BUCKET
-        value: product-images
+      - key: COOKIE_SECURE
+        value: "1"

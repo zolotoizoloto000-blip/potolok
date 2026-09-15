@@ -8,6 +8,7 @@ from io import BytesIO
 import sqlite3, json, uuid, os, time, secrets, hashlib, re
 
 BASE=Path(__file__).resolve().parent
+DATABASE_URL=os.environ.get("DATABASE_URL","")
 UPLOAD=BASE/"static"/"uploads"; UPLOAD.mkdir(parents=True,exist_ok=True)
 DB=BASE/"catalog.db"
 app=Flask(__name__)
@@ -47,7 +48,7 @@ def init():
 init()
 def migrate():
     with db() as c:
-        if DATABASE_URL:
+        if os.environ.get("DATABASE_URL",""):
             for n,t in [("manager_note","TEXT"),("next_contact","TEXT"),("updated_at","TIMESTAMP")]:
                 try:c.execute(f"ALTER TABLE leads ADD COLUMN IF NOT EXISTS {n} {t}")
                 except:pass
