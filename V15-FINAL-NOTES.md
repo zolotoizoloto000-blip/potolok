@@ -1,0 +1,1 @@
+V15 FINAL fixes the V14 audit items: actual Supabase upload path when credentials exist, PostgreSQL adapter retained, dynamic CMS categories, category sitemap/hreflang, combined existing/new photo preview, CRM notes and next-contact fields, plus smoke tests. External account IDs/credentials and real client content still must be supplied at deployment.
