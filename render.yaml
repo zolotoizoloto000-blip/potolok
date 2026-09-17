@@ -1,13 +1,36 @@
 services:
   - type: web
-    name: delai-sam-demo
+    name: delai-sam-tool-rental
     runtime: python
+    plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    disk:
+      name: delai-sam-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_PASSWORD
         sync: false
+      - key: SITE_URL
+        sync: false
       - key: COOKIE_SECURE
-        value: '1'
+        value: "1"
+      - key: DATA_DIR
+        value: /var/data
+      - key: SQLITE_PATH
+        value: /var/data/catalog.db
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: product-images
