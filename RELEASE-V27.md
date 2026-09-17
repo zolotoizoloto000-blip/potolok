@@ -1,0 +1,1 @@
+V27: repaired CRM JSON status persistence, slug generation, lead input validation/rate limit, sitemap escaping, cookie configuration, safe image deletion order, and explicit persistent image storage requirement on Render. Runtime test on PostgreSQL/Render remains necessary. Do not claim deployment-ready until verified.

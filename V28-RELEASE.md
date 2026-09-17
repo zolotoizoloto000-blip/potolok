@@ -1,0 +1,1 @@
+V28: redesigned public site and admin with unified forest/ivory visual system, improved responsive layout, accessibility/reduced-motion, product image thumbnails, photo-upload UI retained. Existing backend preserved. External editorial photos are illustrative, not company portfolio. Configure persistent storage and database; verify on deployed Render before client handover.

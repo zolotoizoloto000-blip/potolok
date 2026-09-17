@@ -13,10 +13,11 @@ UPLOAD=BASE/"static"/"uploads"; UPLOAD.mkdir(parents=True,exist_ok=True)
 DB=BASE/"catalog.db"
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","1")=="1")
 app.config["MAX_CONTENT_LENGTH"]=12*1024*1024
 ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD","")
 ADMIN_HASH=os.environ.get("ADMIN_PASSWORD_HASH","")
-SITE_URL=os.environ.get("SITE_URL","https://example.kz").rstrip("/")
+SITE_URL=os.environ.get("SITE_URL","").rstrip("/")
 ALLOWED={"jpg","jpeg","png","webp"}
 LOGIN_ATTEMPTS={}
 
@@ -62,9 +63,9 @@ def migrate():
 migrate()
 
 def slugify(s):
-    trans=str.maketrans("абвгдеёжзийклмнопрстуфхцчшщъыьэюя","abvgdeejzijklmnoprstufhccss_y_eua")
-    s=s.lower().translate(trans); s=re.sub(r"[^a-z0-9]+","-",s).strip("-")
-    return s or uuid.uuid4().hex[:8]
+    alphabet={"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya","ә":"a","ғ":"g","қ":"q","ң":"n","ө":"o","ұ":"u","ү":"u","һ":"h","і":"i"}
+    text="".join(alphabet.get(c,c) for c in s.lower())
+    return re.sub(r"[^a-z0-9]+","-",text).strip("-") or uuid.uuid4().hex[:8]
 
 def log(action,entity,eid=None,detail=""):
     with db() as c:c.execute("INSERT INTO audit_log(action,entity,entity_id,detail) VALUES(?,?,?,?)",(action,entity,eid,detail))
@@ -106,6 +107,8 @@ def _store_webp(name,payload):
           headers={"Authorization":f"Bearer {key}","apikey":key,"Content-Type":"image/webp","x-upsert":"false"})
         urllib.request.urlopen(req,timeout=20).read()
         return f"{supa}/storage/v1/object/public/{bucket}/{name}"
+    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
+        raise ValueError("Для фотографий на Render настройте SUPABASE_URL, SUPABASE_SERVICE_KEY и SUPABASE_BUCKET")
     (UPLOAD/name).write_bytes(payload)
     return "/static/uploads/"+name
 
@@ -127,7 +130,8 @@ def delete_image_url(u):
 
 def save_images(files):
     urls=[]
-    for f in files[:8]:
+    if len([f for f in files if f and f.filename])>8:raise ValueError("Не более 8 фотографий на товар")
+    for f in files:
         if not f or not f.filename: continue
         ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
         if ext not in ALLOWED: continue
@@ -137,7 +141,9 @@ def save_images(files):
             name=f"{uuid.uuid4().hex}.webp"; buf=BytesIO()
             im.save(buf,"WEBP",quality=82,method=6)
             urls.append(_store_webp(name,buf.getvalue()))
-        except: continue
+        except Exception as exc:
+            app.logger.exception("Photo upload failed")
+            raise ValueError("Не удалось загрузить фотографию. Проверьте формат и хранилище.") from exc
     return urls
 
 @app.context_processor
@@ -222,16 +228,18 @@ def sitemap():
     with db() as c:
         slugs=[r["slug"] for r in c.execute("SELECT slug FROM products WHERE status='Опубликован'")]
         cats=[r["slug"] for r in c.execute("SELECT slug FROM categories")]
+    from xml.sax.saxutils import escape
     urls=[]
+    base=SITE_URL or request.url_root.rstrip("/")
     for l in ("ru","kk","en"):
-        urls.append(f"{SITE_URL}/{l}/")
-        urls += [f"{SITE_URL}/{l}/catalog/{x}" for x in slugs]
-        urls += [f"{SITE_URL}/{l}/category/{x}" for x in cats]
-    xml='<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+''.join(f"<url><loc>{u}</loc></url>" for u in urls)+"</urlset>"
+        urls.append(f"{base}/{l}/")
+        urls += [f"{base}/{l}/catalog/{x}" for x in slugs]
+        urls += [f"{base}/{l}/category/{x}" for x in cats]
+    xml='<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+''.join(f"<url><loc>{escape(u)}</loc></url>" for u in urls)+"</urlset>"
     return app.response_class(xml,mimetype="application/xml")
 
 @app.get("/robots.txt")
-def robots(): return app.response_class(f"User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: {SITE_URL}/sitemap.xml\n",mimetype="text/plain")
+def robots(): return app.response_class(f"User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: {SITE_URL or request.url_root.rstrip(chr(47))}/sitemap.xml\n",mimetype="text/plain")
 
 @app.get("/api/products")
 def api_products():
@@ -260,7 +268,9 @@ def create_product():
     if not is_admin():return jsonify(error="unauthorized"),401
     require_csrf();d=product_form()
     if not d["name_ru"]:return jsonify(error="Название RU обязательно"),400
-    slug=slugify(d["name_ru"]); photos=save_images(request.files.getlist("photos"))
+    slug=slugify(d["name_ru"]);
+    try: photos=save_images(request.files.getlist("photos"))
+    except ValueError as exc:return jsonify(error=str(exc)),400
     with db() as c:
         base=slug;n=2
         while c.execute("SELECT 1 FROM products WHERE slug=?",(slug,)).fetchone():slug=f"{base}-{n}";n+=1
@@ -277,19 +287,20 @@ def update_product(pid):
         r=c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
         if not r:return jsonify(error="not found"),404
         old=row_product(r);d=product_form(old)
-        new=save_images(request.files.getlist("photos"))
+        try:new=save_images(request.files.getlist("photos"))
+        except ValueError as exc:return jsonify(error=str(exc)),400
         try: kept=json.loads(request.form.get("keep_photos","null"))
         except: kept=None
         if not isinstance(kept,list): kept=old["photos"]
         kept=[u for u in kept if u in old["photos"]]
-        for u in old["photos"]:
-            if u not in kept:
-                delete_image_url(u)
-        d["photos"]=json.dumps((kept+new)[:8]);d["updated_at"]="CURRENT_TIMESTAMP"
+        removed=[u for u in old["photos"] if u not in kept]
+        if len(kept)+len(new)>8:return jsonify(error="Не более 8 фотографий на товар"),400
+        d["photos"]=json.dumps(kept+new);d["updated_at"]="CURRENT_TIMESTAMP"
         # timestamp separately to avoid SQL literal as bound string
         d.pop("updated_at")
         c.execute("UPDATE products SET "+",".join(f"{k}=?" for k in d)+",updated_at=CURRENT_TIMESTAMP WHERE id=?",list(d.values())+[pid])
         r=c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
+    for u in removed: delete_image_url(u)
     log("update","product",pid,d["name_ru"]);return jsonify(row_product(r))
 
 @app.delete("/api/products/<int:pid>")
@@ -316,7 +327,19 @@ def reorder():
 @app.post("/api/leads")
 def create_lead():
     data=request.get_json(silent=True) or request.form
-    with db() as c:c.execute("INSERT INTO leads(product_id,source,name,phone,message) VALUES(?,?,?,?,?)",(data.get("product_id"),data.get("source","site"),data.get("name",""),data.get("phone",""),data.get("message","")))
+    name=str(data.get("name", "")).strip()[:120]
+    phone=str(data.get("phone", "")).strip()[:40]
+    message=str(data.get("message", "")).strip()[:3000]
+    source=str(data.get("source", "site")).strip()[:100]
+    if not name or len(''.join(x for x in phone if x.isdigit()))<10:
+        return jsonify(error="Укажите имя и корректный номер телефона"),400
+    if data.get("website"): return jsonify(ok=True),201
+    if not hasattr(create_lead,"hits"): create_lead.hits={}
+    ip=request.remote_addr or "unknown"; now=time.monotonic()
+    hits=[t for t in create_lead.hits.get(ip,[]) if now-t<3600]
+    if len(hits)>=12:return jsonify(error="Слишком много заявок. Попробуйте позже."),429
+    hits.append(now);create_lead.hits[ip]=hits
+    with db() as c:c.execute("INSERT INTO leads(product_id,source,name,phone,message) VALUES(?,?,?,?,?)",(data.get("product_id") or None,source,name,phone,message))
     return jsonify(ok=True),201
 
 @app.get("/api/leads")
@@ -328,9 +351,23 @@ def leads():
 @app.put("/api/leads/<int:lid>")
 def lead_status(lid):
     if not is_admin():return jsonify(error="unauthorized"),401
-    require_csrf(); status=request.form.get("status","Новая"); note=request.form.get("manager_note",""); nxt=request.form.get("next_contact","")
-    with db() as c:c.execute("UPDATE leads SET status=?,manager_note=?,next_contact=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(status,note,nxt,lid))
-    log("status","lead",lid,status);return jsonify(ok=True)
+    require_csrf()
+    data=request.get_json(silent=True) if request.is_json else request.form
+    data=data or {}
+    allowed={"Новая","В работе","Продажа","Отказ","Закрыта","new","work","won","lost"}
+    status=str(data.get("status","Новая"))
+    if status not in allowed:return jsonify(error="Некорректный статус"),400
+    note=str(data.get("manager_note",""))[:3000]
+    nxt=str(data.get("next_contact",""))[:40]
+    with db() as c:
+        existing=c.execute("SELECT id FROM leads WHERE id=?",(lid,)).fetchone()
+        if not existing:return jsonify(error="Заявка не найдена"),404
+        old=c.execute("SELECT manager_note,next_contact FROM leads WHERE id=?",(lid,)).fetchone()
+        if "manager_note" not in data:note=old["manager_note"] or ""
+        if "next_contact" not in data:nxt=old["next_contact"] or ""
+        c.execute("UPDATE leads SET status=?,manager_note=?,next_contact=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(status,note,nxt,lid))
+    log("status","lead",lid,status)
+    return jsonify(ok=True,status=status)
 
 @app.get("/api/audit")
 def audit():
