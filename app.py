@@ -14,8 +14,9 @@ import sqlite3, json, uuid, os, time, secrets, hashlib, re
 
 BASE=Path(__file__).resolve().parent
 DATABASE_URL=os.environ.get("DATABASE_URL","")
-UPLOAD=BASE/"static"/"uploads"; UPLOAD.mkdir(parents=True,exist_ok=True)
-DB=BASE/"catalog.db"
+DATA_DIR=Path(os.environ.get("DATA_DIR", str(BASE))).resolve()
+UPLOAD=Path(os.environ.get("UPLOAD_DIR", str(DATA_DIR/"uploads"))).resolve(); UPLOAD.mkdir(parents=True,exist_ok=True)
+DB=Path(os.environ.get("SQLITE_PATH", str(DATA_DIR/"catalog.db"))).resolve()
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","1")=="1")
@@ -24,7 +25,6 @@ ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD","")
 ADMIN_HASH=os.environ.get("ADMIN_PASSWORD_HASH","")
 SITE_URL=os.environ.get("SITE_URL","").rstrip("/")
 ALLOWED={"jpg","jpeg","png","webp","bmp","tif","tiff","gif","avif","heic","heif"}
-LOGIN_ATTEMPTS={}
 
 @app.after_request
 def security_headers(response):
@@ -33,8 +33,12 @@ def security_headers(response):
     response.headers.setdefault("X-Frame-Options","SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy","strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy","camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self' https://wa.me")
+    if (SITE_URL.startswith("https://") or os.getenv("FORCE_HTTPS","0")=="1"):
+        response.headers.setdefault("Strict-Transport-Security","max-age=31536000; includeSubDomains")
     if request.path.startswith("/admin") or request.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control","no-store")
+        response.headers.setdefault("X-Robots-Tag","noindex, nofollow, noarchive")
     return response
 
 def db():
@@ -49,7 +53,8 @@ def init():
           name_ru TEXT NOT NULL, name_kz TEXT, name_en TEXT,
           description_ru TEXT, description_kz TEXT, description_en TEXT,
           specs_ru TEXT, specs_kz TEXT, specs_en TEXT,
-          category TEXT, brand TEXT, price REAL, unit TEXT, old_price REAL,
+          category TEXT, category_id INTEGER, brand TEXT, price REAL, unit TEXT, old_price REAL,
+          seo_title_ru TEXT, seo_title_kz TEXT, seo_title_en TEXT, seo_description_ru TEXT, seo_description_kz TEXT, seo_description_en TEXT,
           stock TEXT, sku TEXT, status TEXT DEFAULT 'Опубликован',
           ask_price INTEGER DEFAULT 0, featured INTEGER DEFAULT 0, new_item INTEGER DEFAULT 0,
           photos TEXT DEFAULT '[]', sort_order INTEGER DEFAULT 0,
@@ -58,11 +63,14 @@ def init():
           id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, source TEXT, name TEXT, phone TEXT,
           message TEXT, status TEXT DEFAULT 'Новая', manager_note TEXT, next_contact TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS categories(
-          id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE, title_ru TEXT, title_kz TEXT, title_en TEXT, sort_order INTEGER DEFAULT 0);
+          id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE, title_ru TEXT, title_kz TEXT, title_en TEXT, sort_order INTEGER DEFAULT 0,
+          seo_title_ru TEXT, seo_title_kz TEXT, seo_title_en TEXT, seo_description_ru TEXT, seo_description_kz TEXT, seo_description_en TEXT);
         CREATE TABLE IF NOT EXISTS audit_log(
           id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, entity TEXT, entity_id INTEGER, detail TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS site_settings(
           key TEXT PRIMARY KEY, value TEXT DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS login_security(
+          ip_hash TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0, window_start REAL DEFAULT 0, blocked_until REAL DEFAULT 0);
         """)
 init()
 def migrate():
@@ -79,6 +87,27 @@ def migrate():
                     try:c.execute(f"ALTER TABLE leads ADD COLUMN {n} {t}")
                     except:pass
 migrate()
+def migrate_catalog_v44():
+    product_cols=[("category_id","INTEGER"),("seo_title_ru","TEXT"),("seo_title_kz","TEXT"),("seo_title_en","TEXT"),("seo_description_ru","TEXT"),("seo_description_kz","TEXT"),("seo_description_en","TEXT")]
+    category_cols=[("seo_title_ru","TEXT"),("seo_title_kz","TEXT"),("seo_title_en","TEXT"),("seo_description_ru","TEXT"),("seo_description_kz","TEXT"),("seo_description_en","TEXT")]
+    with db() as c:
+        if DATABASE_URL:
+            for n,t in product_cols:
+                try:c.execute(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {n} {t}")
+                except:pass
+            for n,t in category_cols:
+                try:c.execute(f"ALTER TABLE categories ADD COLUMN IF NOT EXISTS {n} {t}")
+                except:pass
+        else:
+            pcols={r["name"] for r in c.execute("PRAGMA table_info(products)")}
+            ccols={r["name"] for r in c.execute("PRAGMA table_info(categories)")}
+            for n,t in product_cols:
+                if n not in pcols:c.execute(f"ALTER TABLE products ADD COLUMN {n} {t}")
+            for n,t in category_cols:
+                if n not in ccols:c.execute(f"ALTER TABLE categories ADD COLUMN {n} {t}")
+        # one-time link old text categories to stable IDs
+        c.execute("UPDATE products SET category_id=(SELECT id FROM categories WHERE categories.title_ru=products.category LIMIT 1) WHERE category_id IS NULL AND category<>''")
+migrate_catalog_v44()
 
 DEFAULT_SETTINGS={
  "hero_eyebrow":"Алматы · Рыскулова 48А/2",
@@ -148,7 +177,9 @@ def localized(d,lang):
       **d,
       "name":d.get(f"name_{lang}") or d.get("name_ru",""),
       "description":d.get(f"description_{lang}") or d.get("description_ru",""),
-      "specs":d.get(f"specs_{lang}") or d.get("specs_ru","")
+      "specs":d.get(f"specs_{lang}") or d.get("specs_ru",""),
+      "seo_title":d.get(f"seo_title_{lang}") or d.get("seo_title_ru","") or d.get(f"name_{lang}") or d.get("name_ru",""),
+      "seo_description":d.get(f"seo_description_{lang}") or d.get("seo_description_ru","") or d.get(f"description_{lang}") or d.get("description_ru","")
     }
 
 
@@ -163,11 +194,11 @@ def _store_webp(name,payload):
         urllib.request.urlopen(req,timeout=20).read()
         return f"{supa}/storage/v1/object/public/{bucket}/{name}"
     (UPLOAD/name).write_bytes(payload)
-    return "/static/uploads/"+name
+    return "/uploads/"+name
 
 def delete_image_url(u):
-    if u.startswith("/static/uploads/"):
-        try:(BASE/u.lstrip("/")).unlink(missing_ok=True)
+    if u.startswith("/uploads/"):
+        try:(UPLOAD/u.rsplit("/",1)[-1]).unlink(missing_ok=True)
         except:pass
         return
     supa=os.environ.get("SUPABASE_URL","").rstrip("/"); key=os.environ.get("SUPABASE_SERVICE_KEY","")
@@ -210,21 +241,37 @@ def save_images(files):
             raise
     return urls
 
+@app.get("/uploads/<path:filename>")
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD, filename, max_age=86400)
+
 @app.context_processor
 def inject(): return {"csrf_token":csrf(),"site_url":SITE_URL}
 
 @app.route("/admin/login", methods=["GET","POST"], strict_slashes=False)
 def login():
     ip=request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip()
-    now=time.time(); attempts=[t for t in LOGIN_ATTEMPTS.get(ip,[]) if now-t<900]
-    LOGIN_ATTEMPTS[ip]=attempts
+    ip_hash=hashlib.sha256((ip+app.secret_key[:16]).encode()).hexdigest()
+    now=time.time()
+    with db() as c:
+        rec=c.execute("SELECT * FROM login_security WHERE ip_hash=?",(ip_hash,)).fetchone()
+    if rec and float(rec["blocked_until"] or 0)>now:
+        return render_template("login.html",error="Слишком много попыток. Повторите через 15 минут."),429
     if request.method=="POST":
-        if len(attempts)>=8:return render_template("login.html",error="Слишком много попыток. Повторите позже."),429
+        if not secrets.compare_digest(request.form.get("csrf",""),session.get("csrf",csrf())):
+            abort(400)
         if verify_password(request.form.get("password","")):
-            session.clear();session["admin"]=True;session["csrf"]=secrets.token_urlsafe(24);LOGIN_ATTEMPTS.pop(ip,None)
+            session.clear();session["admin"]=True;session["csrf"]=secrets.token_urlsafe(24)
+            with db() as c:c.execute("DELETE FROM login_security WHERE ip_hash=?",(ip_hash,))
             log("login","admin",detail=ip);return redirect("/admin")
-        attempts.append(now);LOGIN_ATTEMPTS[ip]=attempts
-        return render_template("login.html",error="Неверный пароль"),401
+        attempts=1; window_start=now
+        if rec and now-float(rec["window_start"] or 0)<900:
+            attempts=int(rec["attempts"] or 0)+1; window_start=float(rec["window_start"] or now)
+        blocked=now+900 if attempts>=8 else 0
+        with db() as c:
+            c.execute("INSERT INTO login_security(ip_hash,attempts,window_start,blocked_until) VALUES(?,?,?,?) ON CONFLICT(ip_hash) DO UPDATE SET attempts=excluded.attempts,window_start=excluded.window_start,blocked_until=excluded.blocked_until",(ip_hash,attempts,window_start,blocked))
+        return render_template("login.html",error="Слишком много попыток. Повторите через 15 минут." if blocked else "Неверный пароль"),429 if blocked else 401
+    csrf()
     return render_template("login.html",error=None)
 
 @app.route("/admin/logout", methods=["POST"], strict_slashes=False)
@@ -252,9 +299,11 @@ def home(lang):
 @app.get("/<lang>/catalog/<slug>")
 def product_page(lang,slug):
     if lang not in ("ru","kk","en"):abort(404)
-    with db() as c:r=c.execute("SELECT * FROM products WHERE slug=? AND status='Опубликован'",(slug,)).fetchone()
-    if not r:abort(404)
-    return render_template("product.html",lang=lang,p=localized(row_product(r),lang))
+    with db() as c:
+        r=c.execute("SELECT * FROM products WHERE slug=? AND status='Опубликован'",(slug,)).fetchone()
+        if not r:abort(404)
+        similar=c.execute("SELECT * FROM products WHERE status='Опубликован' AND id<>? AND ((category_id IS NOT NULL AND category_id=?) OR (category_id IS NULL AND category=?)) ORDER BY featured DESC,id DESC LIMIT 3",(r["id"],r["category_id"],r["category"])).fetchall()
+    return render_template("product.html",lang=lang,p=localized(row_product(r),lang),similar=[localized(row_product(x),lang) for x in similar],settings=get_settings())
 
 
 @app.get("/api/settings")
@@ -317,7 +366,7 @@ def add_category():
     with db() as c:
         if c.execute("SELECT 1 FROM categories WHERE slug=?",(sl,)).fetchone():
             return jsonify(error="Категория с таким адресом уже существует"),409
-        c.execute("INSERT INTO categories(slug,title_ru,title_kz,title_en,sort_order) VALUES(?,?,?,?,?)",(sl,data.get("title_ru",""),data.get("title_kz",""),data.get("title_en",""),data.get("sort_order",0)))
+        c.execute("INSERT INTO categories(slug,title_ru,title_kz,title_en,sort_order,seo_title_ru,seo_title_kz,seo_title_en,seo_description_ru,seo_description_kz,seo_description_en) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(sl,data.get("title_ru",""),data.get("title_kz",""),data.get("title_en",""),data.get("sort_order",0),data.get("seo_title_ru",""),data.get("seo_title_kz",""),data.get("seo_title_en",""),data.get("seo_description_ru",""),data.get("seo_description_kz",""),data.get("seo_description_en","")))
         r=c.execute("SELECT * FROM categories WHERE slug=?",(sl,)).fetchone()
     log("create","category",r["id"],ru);return jsonify(dict(r)),201
 
@@ -335,20 +384,23 @@ def update_category(cid):
         sl=slugify(str(data.get("slug","")).strip() or ru)
         if c.execute("SELECT 1 FROM categories WHERE slug=? AND id<>?",(sl,cid)).fetchone():
             return jsonify(error="Категория с таким адресом уже существует"),409
-        c.execute("UPDATE categories SET slug=?,title_ru=?,title_kz=?,title_en=?,sort_order=? WHERE id=?",(sl,ru,data.get("title_kz",ru),data.get("title_en",ru),data.get("sort_order",old["sort_order"]),cid))
-        c.execute("UPDATE products SET category=? WHERE category=?",(ru,old["title_ru"]))
+        c.execute("UPDATE categories SET slug=?,title_ru=?,title_kz=?,title_en=?,sort_order=?,seo_title_ru=?,seo_title_kz=?,seo_title_en=?,seo_description_ru=?,seo_description_kz=?,seo_description_en=? WHERE id=?",(sl,ru,data.get("title_kz",ru),data.get("title_en",ru),data.get("sort_order",old["sort_order"]),data.get("seo_title_ru",""),data.get("seo_title_kz",""),data.get("seo_title_en",""),data.get("seo_description_ru",""),data.get("seo_description_kz",""),data.get("seo_description_en",""),cid))
+        c.execute("UPDATE products SET category=? WHERE category_id=? OR (category_id IS NULL AND category=?)",(ru,cid,old["title_ru"]))
         r=c.execute("SELECT * FROM categories WHERE id=?",(cid,)).fetchone()
     log("update","category",cid,ru);return jsonify(dict(r))
 
 @app.delete("/api/categories/<int:cid>")
 def del_category(cid):
     if not is_admin():return jsonify(error="unauthorized"),401
-    require_csrf()
+    require_csrf(); mode=request.args.get("mode","")
     with db() as c:
         old=c.execute("SELECT * FROM categories WHERE id=?",(cid,)).fetchone()
-        if old: c.execute("UPDATE products SET category='' WHERE category=?",(old["title_ru"],))
+        if not old:return jsonify(error="not found"),404
+        count=c.execute("SELECT COUNT(*) AS n FROM products WHERE category_id=? OR (category_id IS NULL AND category=?)",(cid,old["title_ru"])).fetchone()["n"]
+        if count and mode!="detach": return jsonify(error="category_has_products",count=count),409
+        if count:c.execute("UPDATE products SET category='',category_id=NULL WHERE category_id=? OR (category_id IS NULL AND category=?)",(cid,old["title_ru"]))
         c.execute("DELETE FROM categories WHERE id=?",(cid,))
-    log("delete","category",cid);return jsonify(ok=True)
+    log("delete","category",cid);return jsonify(ok=True,detached=count)
 
 @app.get("/<lang>/category/<slug>")
 def category_page(lang,slug):
@@ -357,8 +409,11 @@ def category_page(lang,slug):
         cat=c.execute("SELECT * FROM categories WHERE slug=?",(slug,)).fetchone()
         if not cat:abort(404)
         title=cat["title_"+("kz" if lang=="kk" else lang)] or cat["title_ru"]
-        rows=c.execute("SELECT * FROM products WHERE status='Опубликован' AND category=? ORDER BY featured DESC,sort_order,id DESC",(cat["title_ru"],)).fetchall()
-    return render_template("category.html",lang=lang,title=title,slug=slug,products=[localized(row_product(r),lang) for r in rows])
+        rows=c.execute("SELECT * FROM products WHERE status='Опубликован' AND (category_id=? OR (category_id IS NULL AND category=?)) ORDER BY featured DESC,sort_order,id DESC",(cat["id"],cat["title_ru"])).fetchall()
+        lk="kz" if lang=="kk" else lang
+        seo_title=cat[f"seo_title_{lk}"] or title+" | Центр Потолков Алматы"
+        seo_description=cat[f"seo_description_{lk}"] or title+" — каталог Центр Потолков в Алматы. Фото, характеристики и актуальные предложения."
+    return render_template("category.html",lang=lang,title=title,slug=slug,products=[localized(row_product(r),lang) for r in rows],settings=get_settings(),seo_title=seo_title,seo_description=seo_description)
 
 @app.get("/sitemap.xml")
 def sitemap():
@@ -396,7 +451,8 @@ def product_form(old=None):
       name_ru=g("name_ru").strip(),name_kz=g("name_kz"),name_en=g("name_en"),
       description_ru=g("description_ru"),description_kz=g("description_kz"),description_en=g("description_en"),
       specs_ru=g("specs_ru"),specs_kz=g("specs_kz"),specs_en=g("specs_en"),
-      category=g("category"),brand=g("brand"),price=num("price"),unit=g("unit"),old_price=num("old_price"),
+      category=g("category"),category_id=int(g("category_id","0") or 0) or None,brand=g("brand"),price=num("price"),unit=g("unit"),old_price=num("old_price"),
+      seo_title_ru=g("seo_title_ru"),seo_title_kz=g("seo_title_kz"),seo_title_en=g("seo_title_en"),seo_description_ru=g("seo_description_ru"),seo_description_kz=g("seo_description_kz"),seo_description_en=g("seo_description_en"),
       stock=g("stock","В наличии"),sku=g("sku"),status=g("status","Опубликован"),
       ask_price=1 if g("ask_price","0")=="1" else 0,featured=1 if g("featured","0")=="1" else 0,new_item=1 if g("new_item","0")=="1" else 0)
 

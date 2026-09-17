@@ -10,7 +10,7 @@ class Conn:
             from psycopg.rows import dict_row
             self.c=psycopg.connect(DATABASE_URL,row_factory=dict_row)
         else:
-            self.c=sqlite3.connect(os.path.join(os.path.dirname(__file__),"catalog.db"))
+            self.c=sqlite3.connect(os.getenv("SQLITE_PATH") or os.path.join(os.getenv("DATA_DIR",os.path.dirname(__file__)),"catalog.db"))
             self.c.row_factory=sqlite3.Row
     def __enter__(self): return self
     def __exit__(self,t,v,tb):
