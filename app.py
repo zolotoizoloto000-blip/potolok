@@ -21,6 +21,17 @@ SITE_URL=os.environ.get("SITE_URL","").rstrip("/")
 ALLOWED={"jpg","jpeg","png","webp"}
 LOGIN_ATTEMPTS={}
 
+@app.after_request
+def security_headers(response):
+    """Safe defaults for both the public site and the admin panel."""
+    response.headers.setdefault("X-Content-Type-Options","nosniff")
+    response.headers.setdefault("X-Frame-Options","SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy","strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy","camera=(), microphone=(), geolocation=()")
+    if request.path.startswith("/admin") or request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control","no-store")
+    return response
+
 def db():
     from db_adapter import Conn
     return Conn()
@@ -198,11 +209,15 @@ def api_categories():
 def add_category():
     if not is_admin():return jsonify(error="unauthorized"),401
     require_csrf()
-    ru=request.form.get("title_ru","").strip()
+    data=request.get_json(silent=True) if request.is_json else request.form
+    data=data or {}
+    ru=str(data.get("title_ru","")).strip()
     if not ru:return jsonify(error="Название обязательно"),400
-    sl=slugify(ru)
+    sl=slugify(str(data.get("slug","")).strip() or ru)
     with db() as c:
-        c.execute("INSERT INTO categories(slug,title_ru,title_kz,title_en,sort_order) VALUES(?,?,?,?,?)",(sl,request.form.get("title_kz",""),request.form.get("title_en",""),request.form.get("sort_order",0)))
+        if c.execute("SELECT 1 FROM categories WHERE slug=?",(sl,)).fetchone():
+            return jsonify(error="Категория с таким адресом уже существует"),409
+        c.execute("INSERT INTO categories(slug,title_ru,title_kz,title_en,sort_order) VALUES(?,?,?,?,?)",(sl,data.get("title_ru",""),data.get("title_kz",""),data.get("title_en",""),data.get("sort_order",0)))
         r=c.execute("SELECT * FROM categories WHERE slug=?",(sl,)).fetchone()
     log("create","category",r["id"],ru);return jsonify(dict(r)),201
 
