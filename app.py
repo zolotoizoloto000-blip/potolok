@@ -109,6 +109,52 @@ def migrate_catalog_v44():
         c.execute("UPDATE products SET category_id=(SELECT id FROM categories WHERE categories.title_ru=products.category LIMIT 1) WHERE category_id IS NULL AND category<>''")
 migrate_catalog_v44()
 
+def seed_delai_sam_catalog():
+    """Populate a useful rental demo catalogue without overwriting owner-created tools."""
+    categories = [
+      ("perforatory","Перфораторы","Перфораторлар","Rotary hammers"),
+      ("shlifmashiny","Шлифмашины","Тегістеуіштер","Grinders"),
+      ("pily","Пилы","Аралар","Saws"),
+      ("beton","Бетонные работы","Бетон жұмыстары","Concrete tools"),
+      ("sad","Садовая техника","Бақша техникасы","Garden tools"),
+      ("lestnicy","Лестницы и прочее","Сатылар және басқа","Ladders & more"),
+    ]
+    products = [
+      ("Перфоратор SDS+", "SDS+ перфораторы", "SDS+ rotary hammer", "perforatory", "Bosch", 5000, "сутки", "В наличии", "Сверление бетона, кирпича и демонтаж. Компактный вариант для ремонта.", "Бетон мен кірпішті бұрғылау және демонтаж жұмыстарына арналған.", "For drilling concrete and masonry and light demolition."),
+      ("Перфоратор SDS Max", "SDS Max перфораторы", "SDS Max rotary hammer", "perforatory", "Makita", 8000, "сутки", "В наличии", "Мощный перфоратор для тяжёлого бурения и демонтажных работ.", "Ауыр бұрғылау және демонтаж жұмыстарына арналған қуатты құрал.", "Heavy-duty rotary hammer for drilling and demolition."),
+      ("УШМ 125 мм", "125 мм бұрыштық тегістеуіш", "125 mm angle grinder", "shlifmashiny", "DeWalt", 3500, "сутки", "В наличии", "Для резки и шлифовки металла, плитки и других материалов.", "Металл, плитка және басқа материалдарды кесу мен тегістеуге арналған.", "For cutting and grinding metal, tile and other materials."),
+      ("УШМ 230 мм", "230 мм бұрыштық тегістеуіш", "230 mm angle grinder", "shlifmashiny", "Bosch", 5000, "сутки", "В наличии", "Большая болгарка для интенсивной резки металла и камня.", "Металл мен тасты қарқынды кесуге арналған үлкен тегістеуіш.", "Large grinder for intensive cutting of metal and stone."),
+      ("Дисковая пила", "Дискілі ара", "Circular saw", "pily", "Makita", 5000, "сутки", "В наличии", "Точный прямой рез древесины, фанеры и листовых материалов.", "Ағашты, фанераны және табақ материалдарды дәл кесуге арналған.", "For accurate straight cuts in timber, plywood and sheet materials."),
+      ("Торцовочная пила", "Торцовкалық ара", "Mitre saw", "pily", "DeWalt", 8000, "сутки", "Под заказ", "Для точного поперечного и углового распила доски и профиля.", "Тақтай мен профильді дәл көлденең және бұрышпен кесуге арналған.", "For precise crosscuts and angled cuts in timber and profiles."),
+      ("Бетономешалка 180 л", "180 л бетон араластырғыш", "180 L concrete mixer", "beton", "ProCraft", 7000, "сутки", "В наличии", "Для приготовления бетона и строительных растворов прямо на объекте.", "Нысанда бетон мен құрылыс қоспаларын дайындауға арналған.", "For mixing concrete and mortar directly on site."),
+      ("Вибратор для бетона", "Бетон вибраторы", "Concrete vibrator", "beton", "Vektor", 6000, "сутки", "В наличии", "Уплотнение свежего бетона при заливке фундаментов, колонн и перекрытий.", "Іргетас, бағана және жабын құю кезінде бетонды тығыздауға арналған.", "Compacts fresh concrete in foundations, columns and slabs."),
+      ("Триммер бензиновый", "Бензинді триммер", "Petrol trimmer", "sad", "Huter", 6000, "сутки", "В наличии", "Покос травы и расчистка участка. Подходит для дачи и территории вокруг дома.", "Шөп шабу және аумақты тазалауға арналған.", "For mowing grass and clearing garden areas."),
+      ("Бензопила", "Бензин ара", "Chainsaw", "sad", "Stihl", 7000, "сутки", "В наличии", "Для распила древесины, веток и строительного бруса.", "Ағаш, бұтақ және құрылыс бөренелерін кесуге арналған.", "For cutting timber, branches and construction lumber."),
+      ("Стремянка 3 м", "3 м баспалдақ", "3 m stepladder", "lestnicy", "Alumet", 3500, "сутки", "В наличии", "Устойчивая алюминиевая стремянка для монтажных и отделочных работ.", "Монтаж және әрлеу жұмыстарына арналған тұрақты алюминий саты.", "Stable aluminium stepladder for installation and finishing work."),
+      ("Пылесос строительный", "Құрылыс шаңсорғышы", "Construction vacuum", "lestnicy", "Karcher", 5000, "сутки", "В наличии", "Сбор строительной пыли и мусора во время ремонта и монтажа.", "Жөндеу кезінде құрылыс шаңы мен қоқысты жинауға арналған.", "For collecting construction dust and debris during renovation."),
+    ]
+    with db() as c:
+        existing_cats={r["slug"]:r["id"] for r in c.execute("SELECT id,slug FROM categories").fetchall()}
+        order=0
+        for slug,ru,kz,en in categories:
+            if slug not in existing_cats:
+                c.execute("INSERT INTO categories(slug,title_ru,title_kz,title_en,sort_order) VALUES(?,?,?,?,?)",(slug,ru,kz,en,order))
+                row=c.execute("SELECT id FROM categories WHERE slug=?",(slug,)).fetchone(); existing_cats[slug]=row["id"]
+            order+=1
+        # Add demo tools only when this catalogue has not been seeded before.
+        already=c.execute("SELECT 1 FROM products WHERE sku LIKE 'DS-DEMO-%' LIMIT 1").fetchone()
+        if already: return
+        for i,(ru,kz,en,cat,brand,price,unit,stock,dru,dkz,den) in enumerate(products,1):
+            slug=slugify(ru)
+            base=slug;n=2
+            while c.execute("SELECT 1 FROM products WHERE slug=?",(slug,)).fetchone(): slug=f"{base}-{n}"; n+=1
+            cid=existing_cats[cat]
+            cat_ru=next(x[1] for x in categories if x[0]==cat)
+            c.execute("""INSERT INTO products(slug,name_ru,name_kz,name_en,description_ru,description_kz,description_en,specs_ru,specs_kz,specs_en,category,category_id,brand,price,unit,stock,sku,status,featured,new_item,photos,sort_order)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Опубликован',?,?,?,?)""",
+                      (slug,ru,kz,en,dru,dkz,den,"Цена указана для демо. Условия и залог уточняйте у менеджера.","Баға демо үшін көрсетілген. Шарттар мен кепілді менеджерден нақтылаңыз.","Demo price. Confirm terms and deposit with the manager.",cat_ru,cid,brand,price,unit,stock,f"DS-DEMO-{i:02d}",1 if i<=4 else 0,1 if i in (2,7,9) else 0,"[]",i))
+seed_delai_sam_catalog()
+
 DEFAULT_SETTINGS={
  "hero_eyebrow":"Алматы · прокат строительного инструмента",
  "hero_title":"Инструмент для ремонта и стройки — без лишних покупок.",
