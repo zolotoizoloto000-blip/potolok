@@ -160,7 +160,7 @@ def save_images(files):
 @app.context_processor
 def inject(): return {"csrf_token":csrf(),"site_url":SITE_URL}
 
-@app.route("/admin/login",methods=["GET","POST"])
+@app.route("/admin/login", methods=["GET","POST"], strict_slashes=False)
 def login():
     ip=request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip()
     now=time.time(); attempts=[t for t in LOGIN_ATTEMPTS.get(ip,[]) if now-t<900]
@@ -174,10 +174,10 @@ def login():
         return render_template("login.html",error="Неверный пароль"),401
     return render_template("login.html",error=None)
 
-@app.post("/admin/logout")
+@app.route("/admin/logout", methods=["POST"], strict_slashes=False)
 def logout(): require_csrf();session.clear();return redirect("/admin/login")
 
-@app.get("/admin")
+@app.route("/admin", methods=["GET"], strict_slashes=False)
 def admin():
     if not is_admin():return redirect("/admin/login")
     return render_template("admin.html")
