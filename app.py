@@ -95,7 +95,21 @@ DEFAULT_SETTINGS={
  "faq2_q":"Есть решения ALTOR и LEDMAN?",
  "faq2_a":"Поможем подобрать профильные системы ALTOR и освещение LEDMAN. Наличие конкретной позиции уточняйте перед заказом.",
  "faq3_q":"Где вы находитесь?", "faq3_a":"Алматы, проспект Турара Рыскулова, 48А/2.",
- "faq4_q":"Как узнать стоимость?", "faq4_a":"Стоимость зависит от выбранной системы, размеров и комплектации. Оставьте заявку или напишите в WhatsApp."
+ "faq4_q":"Как узнать стоимость?", "faq4_a":"Стоимость зависит от выбранной системы, размеров и комплектации. Оставьте заявку или напишите в WhatsApp.",
+ "faq5_q":"", "faq5_a":"",
+ "faq6_q":"", "faq6_a":"",
+ "faq7_q":"", "faq7_a":"",
+ "faq8_q":"", "faq8_a":"",
+ "faq9_q":"", "faq9_a":"",
+ "faq10_q":"", "faq10_a":"",
+ "faq11_q":"", "faq11_a":"",
+ "faq12_q":"", "faq12_a":"",
+ "seo_title_ru":"Центр Потолков — натяжные потолки, ALTOR и LEDMAN в Алматы",
+ "seo_description_ru":"Натяжные потолки и потолочные системы в Алматы: профили ALTOR, освещение LEDMAN, комплектующие и подбор решения.",
+ "seo_title_kz":"Центр Потолков — Алматыдағы керме төбелер, ALTOR және LEDMAN",
+ "seo_description_kz":"Алматыдағы керме төбелер мен төбе жүйелері: ALTOR профильдері, LEDMAN жарықтандыруы, жинақтау және таңдау.",
+ "seo_title_en":"Centr Potolkov — stretch ceilings, ALTOR and LEDMAN in Almaty",
+ "seo_description_en":"Stretch ceilings and ceiling systems in Almaty: ALTOR profiles, LEDMAN lighting, components and solution selection."
 }
 def get_settings():
     out=dict(DEFAULT_SETTINGS)
@@ -148,8 +162,6 @@ def _store_webp(name,payload):
           headers={"Authorization":f"Bearer {key}","apikey":key,"Content-Type":"image/webp","x-upsert":"false"})
         urllib.request.urlopen(req,timeout=20).read()
         return f"{supa}/storage/v1/object/public/{bucket}/{name}"
-    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
-        raise ValueError("Для фотографий на Render настройте SUPABASE_URL, SUPABASE_SERVICE_KEY и SUPABASE_BUCKET")
     (UPLOAD/name).write_bytes(payload)
     return "/static/uploads/"+name
 
