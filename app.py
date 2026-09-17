@@ -26,6 +26,11 @@ ADMIN_HASH=os.environ.get("ADMIN_PASSWORD_HASH","")
 SITE_URL=os.environ.get("SITE_URL","").rstrip("/")
 ALLOWED={"jpg","jpeg","png","webp","bmp","tif","tiff","gif","avif","heic","heif"}
 
+def slugify(s):
+    alphabet={"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya","ә":"a","ғ":"g","қ":"q","ң":"n","ө":"o","ұ":"u","ү":"u","һ":"h","і":"i"}
+    text="".join(alphabet.get(c,c) for c in s.lower())
+    return re.sub(r"[^a-z0-9]+","-",text).strip("-") or uuid.uuid4().hex[:8]
+
 @app.after_request
 def security_headers(response):
     """Safe defaults for both the public site and the admin panel."""
@@ -182,10 +187,6 @@ def get_settings():
         for r in c.execute("SELECT key,value FROM site_settings").fetchall(): out[r["key"]]=r["value"] or ""
     return out
 
-def slugify(s):
-    alphabet={"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya","ә":"a","ғ":"g","қ":"q","ң":"n","ө":"o","ұ":"u","ү":"u","һ":"h","і":"i"}
-    text="".join(alphabet.get(c,c) for c in s.lower())
-    return re.sub(r"[^a-z0-9]+","-",text).strip("-") or uuid.uuid4().hex[:8]
 
 def log(action,entity,eid=None,detail=""):
     with db() as c:c.execute("INSERT INTO audit_log(action,entity,entity_id,detail) VALUES(?,?,?,?)",(action,entity,eid,detail))
