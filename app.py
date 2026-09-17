@@ -4,6 +4,11 @@ from pathlib import Path
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass
 from io import BytesIO
 import sqlite3, json, uuid, os, time, secrets, hashlib, re
 
@@ -18,7 +23,7 @@ app.config["MAX_CONTENT_LENGTH"]=12*1024*1024
 ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD","")
 ADMIN_HASH=os.environ.get("ADMIN_PASSWORD_HASH","")
 SITE_URL=os.environ.get("SITE_URL","").rstrip("/")
-ALLOWED={"jpg","jpeg","png","webp"}
+ALLOWED={"jpg","jpeg","png","webp","bmp","tif","tiff","gif","avif","heic","heif"}
 LOGIN_ATTEMPTS={}
 
 @app.after_request
@@ -56,6 +61,8 @@ def init():
           id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE, title_ru TEXT, title_kz TEXT, title_en TEXT, sort_order INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS audit_log(
           id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, entity TEXT, entity_id INTEGER, detail TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS site_settings(
+          key TEXT PRIMARY KEY, value TEXT DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         """)
 init()
 def migrate():
@@ -72,6 +79,29 @@ def migrate():
                     try:c.execute(f"ALTER TABLE leads ADD COLUMN {n} {t}")
                     except:pass
 migrate()
+
+DEFAULT_SETTINGS={
+ "hero_eyebrow":"Алматы · Рыскулова 48А/2",
+ "hero_title":"Современный потолок под ваш интерьер — в одном месте.",
+ "hero_text":"Подберём потолочную систему, профиль и освещение под помещение и бюджет. Отправьте фото комнаты — поможем собрать совместимое решение и уточнить стоимость.",
+ "catalog_title":"Системы и комплектующие.",
+ "catalog_text":"Актуальную цену и наличие конкретной позиции уточняйте перед заказом.",
+ "site_background_image":"",
+ "phone":"+7 777 268 72 38", "whatsapp":"77772687238",
+ "address":"Алматы, проспект Турара Рыскулова, 48А/2",
+ "gis_url":"https://2gis.kz/almaty/firm/70000001061828426", "instagram_url":"",
+ "faq1_q":"Можно подобрать систему по фотографии комнаты?",
+ "faq1_a":"Да. Отправьте фотографию, примерную площадь и пожелания — специалист поможет определить подходящее решение.",
+ "faq2_q":"Есть решения ALTOR и LEDMAN?",
+ "faq2_a":"Поможем подобрать профильные системы ALTOR и освещение LEDMAN. Наличие конкретной позиции уточняйте перед заказом.",
+ "faq3_q":"Где вы находитесь?", "faq3_a":"Алматы, проспект Турара Рыскулова, 48А/2.",
+ "faq4_q":"Как узнать стоимость?", "faq4_a":"Стоимость зависит от выбранной системы, размеров и комплектации. Оставьте заявку или напишите в WhatsApp."
+}
+def get_settings():
+    out=dict(DEFAULT_SETTINGS)
+    with db() as c:
+        for r in c.execute("SELECT key,value FROM site_settings").fetchall(): out[r["key"]]=r["value"] or ""
+    return out
 
 def slugify(s):
     alphabet={"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya","ә":"a","ғ":"g","қ":"q","ң":"n","ө":"o","ұ":"u","ү":"u","һ":"h","і":"i"}
@@ -139,22 +169,33 @@ def delete_image_url(u):
             urllib.request.urlopen(req,timeout=15).read()
         except:pass
 
+def save_one_image(f, prefix="img"):
+    if not f or not f.filename: raise ValueError("Выберите изображение")
+    try:
+        im=Image.open(f.stream)
+        try:
+            from PIL import ImageOps
+            im=ImageOps.exif_transpose(im)
+        except: pass
+        if getattr(im,"is_animated",False): im.seek(0)
+        im.thumbnail((2200,2200))
+        if im.mode not in ("RGB","RGBA"): im=im.convert("RGB")
+        name=f"{prefix}-{uuid.uuid4().hex}.webp"; buf=BytesIO()
+        im.save(buf,"WEBP",quality=84,method=6)
+        return _store_webp(name,buf.getvalue())
+    except Exception as exc:
+        app.logger.exception("Image upload failed")
+        raise ValueError("Формат изображения не удалось прочитать. Используйте фото из галереи: JPG, PNG, HEIC/HEIF, WebP, AVIF, TIFF, BMP или GIF.") from exc
+
 def save_images(files):
     urls=[]
     if len([f for f in files if f and f.filename])>8:raise ValueError("Не более 8 фотографий на товар")
     for f in files:
         if not f or not f.filename: continue
-        ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
-        if ext not in ALLOWED: continue
         try:
-            im=Image.open(f.stream); im.thumbnail((1600,1600))
-            if im.mode not in ("RGB","RGBA"): im=im.convert("RGB")
-            name=f"{uuid.uuid4().hex}.webp"; buf=BytesIO()
-            im.save(buf,"WEBP",quality=82,method=6)
-            urls.append(_store_webp(name,buf.getvalue()))
-        except Exception as exc:
-            app.logger.exception("Photo upload failed")
-            raise ValueError("Не удалось загрузить фотографию. Проверьте формат и хранилище.") from exc
+            urls.append(save_one_image(f,"product"))
+        except ValueError:
+            raise
     return urls
 
 @app.context_processor
@@ -188,9 +229,13 @@ def root(): return redirect("/ru/",302)
 @app.get("/<lang>/")
 def home(lang):
     if lang not in ("ru","kk","en"):abort(404)
-    with db() as c: rows=c.execute("SELECT * FROM products WHERE status='Опубликован' ORDER BY featured DESC,sort_order,id DESC").fetchall()
+    with db() as c:
+        rows=c.execute("SELECT * FROM products WHERE status='Опубликован' ORDER BY featured DESC,sort_order,id DESC").fetchall()
+        cats=c.execute("SELECT * FROM categories ORDER BY sort_order,id").fetchall()
     items=[localized(row_product(r),lang) for r in rows]
-    return render_template("site.html",lang=lang,products=items)
+    ck="title_"+("kz" if lang=="kk" else lang)
+    categories=[{**dict(x),"title":x[ck] or x["title_ru"]} for x in cats]
+    return render_template("site.html",lang=lang,products=items,categories=categories,settings=get_settings())
 
 @app.get("/<lang>/catalog/<slug>")
 def product_page(lang,slug):
@@ -199,6 +244,49 @@ def product_page(lang,slug):
     if not r:abort(404)
     return render_template("product.html",lang=lang,p=localized(row_product(r),lang))
 
+
+@app.get("/api/settings")
+def api_settings():
+    if not is_admin(): return jsonify(error="unauthorized"),401
+    return jsonify(get_settings())
+
+@app.put("/api/settings")
+def save_settings():
+    if not is_admin(): return jsonify(error="unauthorized"),401
+    require_csrf()
+    data=request.get_json(silent=True) or {}
+    allowed=set(DEFAULT_SETTINGS)
+    with db() as c:
+        for k,v in data.items():
+            if k not in allowed: continue
+            v=str(v)[:4000]
+            c.execute("INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP",(k,v))
+    log("update","site_settings")
+    return jsonify(ok=True,settings=get_settings())
+
+
+@app.post("/api/site-background")
+def site_background_upload():
+    if not is_admin(): return jsonify(error="unauthorized"),401
+    require_csrf()
+    f=request.files.get("background")
+    try: url=save_one_image(f,"background")
+    except ValueError as exc: return jsonify(error=str(exc)),400
+    old=get_settings().get("site_background_image","")
+    with db() as c:
+        c.execute("INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP",("site_background_image",url))
+    if old and old!=url: delete_image_url(old)
+    log("update","site_background")
+    return jsonify(ok=True,url=url,settings=get_settings())
+
+@app.delete("/api/site-background")
+def site_background_delete():
+    if not is_admin(): return jsonify(error="unauthorized"),401
+    require_csrf(); old=get_settings().get("site_background_image","")
+    with db() as c:
+        c.execute("INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='',updated_at=CURRENT_TIMESTAMP",("site_background_image",""))
+    if old: delete_image_url(old)
+    return jsonify(ok=True,settings=get_settings())
 
 @app.get("/api/categories")
 def api_categories():
@@ -221,11 +309,33 @@ def add_category():
         r=c.execute("SELECT * FROM categories WHERE slug=?",(sl,)).fetchone()
     log("create","category",r["id"],ru);return jsonify(dict(r)),201
 
+@app.put("/api/categories/<int:cid>")
+def update_category(cid):
+    if not is_admin():return jsonify(error="unauthorized"),401
+    require_csrf()
+    data=request.get_json(silent=True) if request.is_json else request.form
+    data=data or {}
+    ru=str(data.get("title_ru","")).strip()
+    if not ru:return jsonify(error="Название обязательно"),400
+    with db() as c:
+        old=c.execute("SELECT * FROM categories WHERE id=?",(cid,)).fetchone()
+        if not old:return jsonify(error="not found"),404
+        sl=slugify(str(data.get("slug","")).strip() or ru)
+        if c.execute("SELECT 1 FROM categories WHERE slug=? AND id<>?",(sl,cid)).fetchone():
+            return jsonify(error="Категория с таким адресом уже существует"),409
+        c.execute("UPDATE categories SET slug=?,title_ru=?,title_kz=?,title_en=?,sort_order=? WHERE id=?",(sl,ru,data.get("title_kz",ru),data.get("title_en",ru),data.get("sort_order",old["sort_order"]),cid))
+        c.execute("UPDATE products SET category=? WHERE category=?",(ru,old["title_ru"]))
+        r=c.execute("SELECT * FROM categories WHERE id=?",(cid,)).fetchone()
+    log("update","category",cid,ru);return jsonify(dict(r))
+
 @app.delete("/api/categories/<int:cid>")
 def del_category(cid):
     if not is_admin():return jsonify(error="unauthorized"),401
     require_csrf()
-    with db() as c:c.execute("DELETE FROM categories WHERE id=?",(cid,))
+    with db() as c:
+        old=c.execute("SELECT * FROM categories WHERE id=?",(cid,)).fetchone()
+        if old: c.execute("UPDATE products SET category='' WHERE category=?",(old["title_ru"],))
+        c.execute("DELETE FROM categories WHERE id=?",(cid,))
     log("delete","category",cid);return jsonify(ok=True)
 
 @app.get("/<lang>/category/<slug>")

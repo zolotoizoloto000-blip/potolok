@@ -2,3 +2,5 @@ Flask==3.1.2
 gunicorn==23.0.0
 Pillow>=11.3,<12
 psycopg[binary]>=3.3.2,<4
+
+pillow-heif>=1.1,<2
